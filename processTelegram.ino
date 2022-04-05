@@ -15,17 +15,9 @@ void processTelegram()
                                                     , DSMRdata.timestamp.c_str());
 
 //----- update OLED display ---------
-  if (settingOledType > 0)
-  {
-    String DT   = buildDateTimeString(DSMRdata.timestamp.c_str(), sizeof(DSMRdata.timestamp));
-
-    snprintf(cMsg, sizeof(cMsg), "%s - %s", DT.substring(0, 10).c_str(), DT.substring(11, 16).c_str());
-    oled_Print_Msg(0, cMsg, 0);
-    snprintf(cMsg, sizeof(cMsg), "-Power%7d Watt", (int)(DSMRdata.power_delivered *1000));
-    oled_Print_Msg(1, cMsg, 0);
-    snprintf(cMsg, sizeof(cMsg), "+Power%7d Watt", (int)(DSMRdata.power_returned *1000));
-    oled_Print_Msg(2, cMsg, 0);
-  }
+  String DT   = buildDateTimeString(DSMRdata.timestamp.c_str(), sizeof(DSMRdata.timestamp));
+  snprintf(cMsg, sizeof(cMsg), "%s - %s", DT.substring(0, 10).c_str(), DT.substring(11, 16).c_str());
+  drawScreen(oled_process_telegram, cMsg);
                                                     
   strlcpy(newTimestamp, DSMRdata.timestamp.c_str(), sizeof(newTimestamp)); 
   DebugTf("Timestamp(now)=[%s]\r\n", newTimestamp);
@@ -54,7 +46,7 @@ void processTelegram()
     return;
   }
   
-  DebugTf("epoch actHour[%d] -- newHour[%d]\r\n", actT, newT);
+  DebugTf("epoch actHour[%d] -- newHour[%d]\r\n", (int)actT, (int)newT);
   DebugTf("Hour(local TZ)  actHour[%02d] -- newHour[%02d]\r\n", hour(actT), hour(newT));
    //--- if we have a new hour() update the previous hour
   if (hour(actT) != hour(newT)) {

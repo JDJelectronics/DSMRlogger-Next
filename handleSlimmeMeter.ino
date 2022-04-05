@@ -11,32 +11,26 @@
 
 void initSlimmermeter()
 {
-#if defined( USE_REQUEST_PIN ) && !defined( HAS_NO_SLIMMEMETER )
+#if !defined( HAS_NO_SLIMMEMETER )
   #if defined(ESP8266) 
-    #ifdef USE_PRE40_PROTOCOL                                                        
-      SM_SERIAL.begin(9600, SERIAL_7E1);                                               
-    #else   // not use_dsmr_30                                                        
-      SM_SERIAL.begin(115200, SERIAL_8N1);
-    #endif  // use_dsmr_30
+    SM_SERIAL.begin(115200, SERIAL_8N1);
     DebugTf("Swapping serial port to Smart Meter, debug output will continue on telnet\r\n");
     DebugFlush();
     SM_SERIAL.swap();      // swap to SmartMeter
   #elif defined(ESP32)
     DebugTf("Serialport set to (RX,TX) (%d/%d)\r\n", RXD2, TXD2 );
-    #ifdef USE_PRE40_PROTOCOL                                                       
-      SM_SERIAL.begin( 9600, SERIAL_7E1, RXD2, TXD2 );   
-      //SM_SERIAL.begin(9600, SERIAL_7E1);                            
-    #else   // DSMR 4.x & 5.x
       //Serial2.begin( 115200, SERIAL_8N1, 16, 17 );  
       SM_SERIAL.begin( 115200, SERIAL_8N1, RXD2, TXD2 );
       //SM_SERIAL.begin(115200, SERIAL_8N1);
-    #endif  // use_dsmr_30
   #endif
 
   #ifdef DTR_ENABLE
     pinMode(DTR_ENABLE, OUTPUT);
+    slimmeMeter.enable(true);
+  #else
+    slimmeMeter.enable(false);    // So if there is not DTR pin, then the request pin stays enabled, so messages will continue to be sent periodically.
   #endif
-#endif // USE_REQUEST_PIN && !HAS_NO_SLIMMEMETER 
+#endif // !HAS_NO_SLIMMEMETER 
 }
 
 #ifndef HAS_NO_SLIMMEMETER
@@ -63,7 +57,11 @@ void tiggerNextTelegram()
 {
     if (Verbose1|| Verbose2) DebugTln("Enable DTR, get that telegram...");
     // //-- enable DTR to read a telegram from the Slimme Meter
-    slimmeMeter.enable(true); 
+    #ifdef DTR_ENABLE
+      slimmeMeter.enable(true); 
+    #else
+      slimmeMeter.enable(false);
+    #endif
     timerTlg = millis();
 } // tiggerNextTelegram()
 
@@ -81,14 +79,14 @@ void processSlimmemeterRaw()
     return;
   }
   
-  if (settingOledType > 0)
-  {
-    oled_Print_Msg(0, "<DSMRlogger-Next>", 0);
-    oled_Print_Msg(1, "-------------------------",0);
-    oled_Print_Msg(2, "Raw Format",0);
-    snprintf(cMsg, sizeof(cMsg), "Raw Count %4d", showRawCount);
-    oled_Print_Msg(3, cMsg, 0);
-  }
+  // if (settingOledType > 0)
+  // {
+  //   oled_Print_Msg(0, "<DSMRlogger-Next>", 0);
+  //   oled_Print_Msg(1, "-------------------------",0);
+  //   oled_Print_Msg(2, "Raw Format",0);
+  //   snprintf(cMsg, sizeof(cMsg), "Raw Count %4d", showRawCount);
+  //   oled_Print_Msg(3, cMsg, 0);
+  // }
 
   slimmeMeter.enable(true);
   SM_SERIAL.setTimeout(10000);  // 10 seconds must be enough ..
@@ -108,16 +106,8 @@ void processSlimmemeterRaw()
   }
 
   tlgrm[l++] = '!';
-#if !defined( USE_PRE40_PROTOCOL )
-  // next 6 bytes are "<CRC>\r\n"
-  for (int i=0; ( i<6 && (i<(sizeof(tlgrm)-7)) ); i++)
-  {
-    tlgrm[l++] = (char)SM_SERIAL.read();
-  }
-#else
   tlgrm[l++]    = '\r';
   tlgrm[l++]    = '\n';
-#endif
   tlgrm[(l +1)] = '\0';
   // shift telegram 1 char to the right (make room at pos [0] for '/')
   for (int i=strlen(tlgrm); i>=0; i--) { tlgrm[i+1] = tlgrm[i]; yield(); }
@@ -135,7 +125,7 @@ void processSlimmemeter()
   slimmeMeter.loop();
   if (slimmeMeter.available()) 
   {
-    if (Verbose2) DebugTf("Telegram received [%d] ms after DTR enable.\r\n",  (timerTlg-millis()));
+    if (Verbose2) DebugTf("Telegram received [%d] ms after DTR enable.\r\n",  (int)(timerTlg-millis()));
     Debugln(F("\r\n[Time----][FreeHea| Frags| mBlck] Function----(line):\r"));
     DebugTf("telegramCount=[%d] telegramErrors=[%d]\r\n", telegramCount, telegramErrors);
     //  Voorbeeld: [21:00:11][   9880|     9|  8960] loop        ( 997): read telegram [28] => [140307210001S]
@@ -209,7 +199,11 @@ void processSlimmemeter()
       #endif
       DebugTf("Parse error\r\n%s\r\n\r\n", DSMRerror.c_str());
       //--- set DTR to get a new telegram as soon as possible
-      slimmeMeter.enable(true);
+      #ifdef DTR_ENABLE
+        slimmeMeter.enable(true);
+      #else
+        slimmeMeter.enable(false);
+      #endif
       slimmeMeter.loop();
     }
 

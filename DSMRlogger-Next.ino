@@ -26,7 +26,7 @@
     - Board: "Generic ESP8266 Module"
     - Builtin Led: "2"  // GPIO02 for Wemos and ESP-12
     - Flash mode: "DOUT" | "DIO"    // changes only after power-off and on again!
-    - Flash size: "4MB (FS: 2MB OAT:~1019KB)"  << LET OP! 2MB SPIFFS
+    - Flash size: "4MB (FS: 2MB OAT:~1019KB)"  << LET OP! 2MB LittleFS
     - DebugT port: "Disabled"
     - DebugT Level: "None"
     - IwIP Variant: "v2 Lower Memory"
@@ -79,21 +79,18 @@
 /******************** compiler options  ********************************************/
 #define USE_REQUEST_PIN           // define if it's a esp8266 with GPIO 12 connected to SM DTR pin
 #define USE_UPDATE_SERVER         // define if there is enough memory and updateServer to be used
-//  #define USE_BELGIUM_PROTOCOL      // define if Slimme Meter is a Belgium Smart Meter
-//  #define USE_PRE40_PROTOCOL        // define if Slimme Meter is pre DSMR 4.0 (2.2 .. 3.0)
-//  #define USE_NTP_TIME              // define to generate Timestamp from NTP (Only Winter Time for now)
-//  #define HAS_NO_SLIMMEMETER        // define for testing only!
+//#define USE_NTP_TIME              // define to generate Timestamp from NTP (Only Winter Time for now)
+//#define HAS_NO_SLIMMEMETER        // define for testing only!
 #define USE_INFLUXDB              // define if you want to use Influxdb (configure through webinterface)
 #define USE_MQTT                  // define if you want to use MQTT (configure through webinterface)
 #define USE_MINDERGAS             // define if you want to update mindergas (configure through webinterface)
-//  #define USE_SYSLOGGER               // define if you want to use the sysLog library for debugging
-//  #define SHOW_PASSWRDS               // well .. show the PSK key and MQTT password, what else?
-//  #define USE_WEMOSLOLIN32            //define if it is a WEMOS LOLIN32 with OLED (requires different IO pins and I2Cadres)
+// #define USE_SYSLOGGER               // define if you want to use the sysLog library for debugging
+// #define SHOW_PASSWRDS               // well .. show the PSK key and MQTT password, what else?
+// #define USE_WEMOSLOLIN32            //define if it is a WEMOS LOLIN32 with OLED (requires different IO pins and I2Cadres)#define DEVICE "ESP32"
+#define USE_P1_RB_REV4
 /******************** don't change anything below this comment **********************/
 
-#ifndef LED_BUILTIN
-#define LED_BUILTIN 2
-#endif
+
 
 #include "DSMRlogger-Next.h"
 
@@ -103,7 +100,7 @@ struct showValues {
     TelnetStream.print("showValues: ");
     if (i.present()) 
     {
-      TelnetStream.print(Item::name);
+      TelnetStream.print(Item::get_name());
       TelnetStream.print(F(": "));
       TelnetStream.print(i.val());
       TelnetStream.print(Item::unit());
@@ -119,26 +116,27 @@ struct showValues {
 //===========================================================================================
 void displayStatus() 
 {
-  if (settingOledType > 0)
-  {
-    switch(msgMode) { 
-      case 1:   snprintf(cMsg, sizeof(cMsg), "Up:%-15.15s", upTime().c_str());
-                break;
-      case 2:   snprintf(cMsg, sizeof(cMsg), "WiFi RSSI:%4d dBm", WiFi.RSSI());
-                break;
-      case 3:   snprintf(cMsg, sizeof(cMsg), "Heap:%7d Bytes", ESP.getFreeHeap());
-                break;
-      case 4:   if (WiFi.status() != WL_CONNECTED)
-                      snprintf(cMsg, sizeof(cMsg), "**** NO  WIFI ****");
-                else  snprintf(cMsg, sizeof(cMsg), "IP %s", WiFi.localIP().toString().c_str());
-                break;
-      default:  snprintf(cMsg, sizeof(cMsg), "Telgrms:%6d/%3d", telegramCount, telegramErrors);
-                break;
-    }
+  switch(msgMode) { 
+    case 1:   snprintf(cMsg, sizeof(cMsg), "Up:%-15.15s", upTime().c_str());
+              break;
+    case 2:   snprintf(cMsg, sizeof(cMsg), "WiFi RSSI:%4d dBm", WiFi.RSSI());
+              break;
+    case 3:   snprintf(cMsg, sizeof(cMsg), "Heap:%7d Bytes", ESP.getFreeHeap());
+              break;
+    case 4:   if (WiFi.status() != WL_CONNECTED) {
+                drawOffline();
+                snprintf(cMsg, sizeof(cMsg), "**** NO  WIFI ****");
+              } else {
+                snprintf(cMsg, sizeof(cMsg), "IP %s", WiFi.localIP().toString().c_str());
+              }                
+              break;
+    default:  snprintf(cMsg, sizeof(cMsg), "Telgrms:%6d/%3d", telegramCount, telegramErrors);
+              break;
+    drawScreen(oled_display_msg, cMsg);
+  }
 
-    oled_Print_Msg(3, cMsg, 0);
-    msgMode= (msgMode+1) % 5; //modular 5 = number of message displayed (hence it cycles thru the messages
-  }  
+
+  msgMode= (msgMode+1) % 5; //modular 5 = number of message displayed (hence it cycles thru the messages)
 } // displayStatus()
 
 
@@ -149,20 +147,10 @@ void openSysLog(bool empty)
   if (sysLog.begin(500, 100, empty))  // 500 lines use existing sysLog file
   {   
     DebugTln("Succes opening sysLog!");
-    if (settingOledType > 0)
-    {
-      oled_Print_Msg(0, " <DSMRlogger-Next>", 0);
-      oled_Print_Msg(3, "Syslog OK!", 500);
-    }
   }
   else
   {
     DebugTln("Error opening sysLog!");
-    if (settingOledType > 0)
-    {
-      oled_Print_Msg(0, " <DSMRlogger-Next>", 0);
-      oled_Print_Msg(3, "Error Syslog", 1500);
-    }
   }
 
   sysLog.setDebugLvl(1);
@@ -190,15 +178,23 @@ void setup()
   //================ Serial Debug ================================
 
   DEBUG_PORT.begin(115200, SERIAL_8N1);                   //DEBUG
-  Debugf("\n\nBooting [%s]", _FW_VERSION);
-  for(int i=10; i>0; i--)
+  Debugf("\n\nBooting DSMR-Next [%s]", _FW_VERSION);
+  //================ oLed =======================================
+  if (settingOledType > 0)
   {
-    delay(300);
-    Debugf(".");
+    oled_Init();
+    drawFirmware();
   }
   Debugf("\r\n");
   DebugFlush();  //flush out all serial data
-
+  for(int i=8; i>0; i--) 
+  {
+    digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
+    Debug(".");
+    delay(500);
+  }
+  Debugln();
+  
   //setup hardware buildin led and flash_button
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(FLASH_BUTTON, INPUT);
@@ -211,56 +207,36 @@ void setup()
   #elif defined(ESP32)
     randomSeed(esp_random());
   #endif
-  strlcpy(settingHostname, _DEFAULT_HOSTNAME, sizeof(settingHostname));
-  
 
-//================ oLed =======================================
-  if (settingOledType > 0)
-  {
-    oled_Init();
-    oled_Clear();  // clear the screen so we can paint the menu.
-    oled_Print_Msg(0, "<DSMRlogger-Next>", 0);
-    oled_Print_Msg(1, _SEMVER_FULL , 0);
-    oled_Print_Msg(2, "The next DSMRlogger", 0);
-    oled_Print_Msg(3, " >> Enjoy logging! <<", 1000);
-    yield();
-  }
-  else  // don't blink if oled-screen attatched
-  {
-    for(int i=8; i>0; i--) 
-    {
-      digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
-      Debug(".");
-      delay(500);
-    }
-    Debugln();
-  }
+  strlcpy(settingHostname, _DEFAULT_HOSTNAME, sizeof(settingHostname));
   digitalWrite(LED_BUILTIN, LED_OFF);  // HIGH is OFF
   lastReset = getResetReason();
   Debugf("\n\nReset reason....[%s]\r\n", lastReset.c_str());  
 
   
 //=============start Networkstuff==================================
-  if (settingOledType > 0)
-  {
-    if (settingOledFlip)  oled_Init();  // only if true restart(init) oled screen
-    oled_Clear();                       // clear the screen 
-    oled_Print_Msg(0, " <DSMRlogger-Next>", 0);
-    oled_Print_Msg(1, "Verbinden met WiFi", 500);
-  }
   digitalWrite(LED_BUILTIN, LED_ON);
   startWiFi(settingHostname, 240);  // timeout 4 minuten
   Debugln(F("Wifi started..."));
   Debug (F("Connected to " )); Debugln (WiFi.SSID());
   Debug (F("IP address: " ));  Debugln (WiFi.localIP());
   Debug (F("IP gateway: " ));  Debugln (WiFi.gatewayIP());
+  
+  //================ setup TELEGRAM BOT---- =====================
+  Debugf("Set CA certification File for TelegramBOT API");
+  secured_client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
+  Debugln("Succesfull: CA certification File set");
+  //Debugf("POST API test");
+  //bot.sendMessage("-771371129", "Succesfull connected with api.telegram.com", "Markdown");
+  Debugln("Starting TelegramBot");
+  bot_setup();
+  
 
+  
   if (settingOledType > 0)
   {
-    oled_Print_Msg(0, " <DSMRlogger-Next>", 0);
-    oled_Print_Msg(1, WiFi.SSID().c_str(), 0);
-    snprintf(cMsg, sizeof(cMsg), "IP %s", WiFi.localIP().toString().c_str());
-    oled_Print_Msg(2, cMsg, 1500);
+    drawScreen(oled_APconnected);
+    delay(1500);
   }
   else
   {
@@ -283,85 +259,41 @@ void setup()
 //-----------------------------------------------------------------
 
   startMDNS(settingHostname);
-  if (settingOledType > 0)
-  {
-    oled_Print_Msg(3, "mDNS gestart", 1500);
-  }
+  drawScreen(oled_mdns_started);
+
 
   Debugf("Starting Telnet");    
   startTelnet();
-  if (settingOledType > 0)
-  {
-    oled_Print_Msg(0, " <DSMRloggerAPI>", 0);
-    oled_Print_Msg(3, "telnet (poort 23)", 2500);
-  }
+  drawScreen(oled_telnet_connected);
   Debugln("Debug open for business on port 23");
   
 //=============end Networkstuff======================================
 
-//============= start SPIFFS ========================================
-  if (SPIFFS.begin()) 
-  {
-    DebugTln(F("SPIFFS Mount succesfull\r"));
-    SPIFFSmounted = true;
-    if (settingOledType > 0)
-    {
-      oled_Print_Msg(0, " <DSMRlogger-Next>", 0);
-      oled_Print_Msg(3, "SPIFFS mounted", 1500);
-    }    
-  } else { 
-    DebugTln(F("SPIFFS Mount failed\r"));   // Serious problem with SPIFFS 
-    SPIFFSmounted = false;
-    if (settingOledType > 0)
-    {
-      oled_Print_Msg(0, " <DSMRlogger-Next>", 0);
-      oled_Print_Msg(3, "SPIFFS FAILED!", 2000);
-    }
-  }
+//============= start LittleFS ========================================
+LittleFSmounted = LittleFS.begin();
+if (LittleFSmounted) {
+  drawScreen(oled_littlefs_mounted);
+} else {
+  drawScreen(oled_littlefs_mount_failed);
+}
 
 //------ read status file for last Timestamp --------------------
-  strncpy(actTimestamp, "040302010101X", sizeof(actTimestamp));
-  //==========================================================//
-  // writeLastStatus();  // only for firsttime initialization //
-  //==========================================================//
-  readLastStatus(); // place it in actTimestamp
-  // set the time to actTimestamp!
-  actT = epoch(actTimestamp, strlen(actTimestamp), true);
-  DebugTf("===> actTimestamp[%s]-> nrReboots[%u] - Errors[%u]\r\n\n", actTimestamp
-                                                                    , nrReboots++
-                                                                    , slotErrors);                                                                    
-  readSettings(true);
+strncpy(actTimestamp, "040302010101X", sizeof(actTimestamp));
+//==========================================================//
+// writeLastStatus();  // only for firsttime initialization //
+//==========================================================//
+readLastStatus(); // place it in actTimestamp
+// set the time to actTimestamp!
+actT = epoch(actTimestamp, strlen(actTimestamp), true);
+DebugTf("===> actTimestamp[%s]-> nrReboots[%u] - Errors[%u]\r\n\n", actTimestamp
+                                                                  , nrReboots++
+                                                                  , slotErrors);                                                                    
+readSettings(true);
 
-//============= end SPIFFS ========================================
+//============= end LittleFS ========================================
 
 #if defined(USE_NTP_TIME)                                   //USE_NTP
-//================ startNTP =========================================
-  if (settingOledType > 0)                                  //USE_NTP
-  {                                                         //USE_NTP
-    oled_Print_Msg(3, "setup NTP server", 100);             //USE_NTP
-  }                                                         //USE_NTP
-                                                            //USE_NTP
-  if (!startNTP())                                          //USE_NTP
-  {                                                         //USE_NTP
-    DebugTln(F("ERROR!!! No NTP server reached!\r\n\r"));   //USE_NTP
-    if (settingOledType > 0)                                //USE_NTP
-    {                                                       //USE_NTP
-      oled_Print_Msg(0, " <DSMRlogger-Next>", 0);              //USE_NTP
-      oled_Print_Msg(2, "geen reactie van", 100);           //USE_NTP
-      oled_Print_Msg(2, "NTP server's", 100);               //USE_NTP 
-      oled_Print_Msg(3, "Reboot DSMR-logger", 2000);        //USE_NTP
-    }                                                       //USE_NTP
-    delay(2000);                                            //USE_NTP
-    esp_reboot();                                          //USE_NTP
-    delay(3000);                                            //USE_NTP
-  }                                                         //USE_NTP
-  if (settingOledType > 0)                                  //USE_NTP
-  {                                                         //USE_NTP
-    oled_Print_Msg(0, " <DSMRlogger-Next>", 0);                //USE_NTP
-    oled_Print_Msg(3, "NTP gestart", 1500);                 //USE_NTP
-  }                                                         //USE_NTP
-  prevNtpHour = hour();                                     //USE_NTP
-                                                            //USE_NTP
+  startNTP();
 #endif  //USE_NTP_TIME                                      //USE_NTP
 //================ end NTP =========================================
 
@@ -370,7 +302,7 @@ void setup()
 
   Debugf("\nGebruik 'telnet %s ' voor verdere debugging\r\n",WiFi.localIP().toString().c_str());
 
-//=============now test if SPIFFS is correct populated!============
+//=============now test if LittleFS is correct populated!============
   if (DSMRfileExist(settingIndexPage, false) )
   {
     if (strcmp(settingIndexPage, "DSMRindex.html") != 0)
@@ -387,7 +319,7 @@ void setup()
   }
   if (!hasAlternativeIndex && !DSMRfileExist("/DSMRindex.html", false) )
   {
-    spiffsNotPopulated = true;
+    LittleFSNotPopulated = true;
   }
   if (!hasAlternativeIndex)    //--- there's no alternative index.html
   {
@@ -397,27 +329,20 @@ void setup()
   }
   if (!DSMRfileExist("/FSexplorer.html", true))
   {
-    spiffsNotPopulated = true;
+    LittleFSNotPopulated = true;
   }
   if (!DSMRfileExist("/FSexplorer.css", true))
   {
-    spiffsNotPopulated = true;
+    LittleFSNotPopulated = true;
   }
-//=============end SPIFFS =========================================
+//=============end LittleFS =========================================
 #ifdef USE_SYSLOGGER
-  if (spiffsNotPopulated)
+  if (LittleFSNotPopulated)
   {
-    sysLog.write("SPIFFS is not correct populated (files are missing)");
+    sysLog.write("LittleFS is not correct populated (files are missing)");
   }
 #endif
   
-//=============now test if "convertPRD" file exists================
-
-  if (SPIFFS.exists("/!PRDconvert") )
-  {
-    convertPRD2RING();
-  }
-
 //=================================================================
 
 #if defined(USE_NTP_TIME)                                                           //USE_NTP
@@ -429,23 +354,14 @@ void setup()
   DebugTf("Time is set to [%s] from NTP\r\n", cMsg);                                //USE_NTP
 #endif  // use_dsmr_30
 
-  if (settingOledType > 0)
-  {
-    snprintf(cMsg, sizeof(cMsg), "DT: %02d%02d%02d%02d0101W", thisYear
-                                                            , thisMonth, thisDay, thisHour);
-    oled_Print_Msg(0, " <DSMRlogger-Next>", 0);
-    oled_Print_Msg(3, cMsg, 1500);
-  }
+snprintf(cMsg, sizeof(cMsg), "DT: %02d%02d%02d%02d0101W", thisYear, thisMonth, thisDay, thisHour);
+drawScreen(oled_date_time, cMsg);
 
 //================ Start MQTT  ======================================
 
 #ifdef USE_MQTT                                                 //USE_MQTT
   connectMQTT();                                                //USE_MQTT
-  if (settingOledType > 0)                                      //USE_MQTT
-  {                                                             //USE_MQTT
-    oled_Print_Msg(0, " <DSMRlogger-Next>", 0);                    //USE_MQTT
-    oled_Print_Msg(3, "MQTT server set!", 1500);                //USE_MQTT
-  }                                                             //USE_MQTT
+  drawScreen(oled_mqtt_connected);                              //USE_MQTT
 #endif                                                          //USE_MQTT
 
 //================ End of Start MQTT  ===============================
@@ -453,17 +369,10 @@ void setup()
 
 //================ Start HTTP Server ================================
 
-  if (!spiffsNotPopulated) {
-    DebugTln(F("SPIFFS correct populated -> normal operation!\r"));
-    if (settingOledType > 0)
-    {
-      oled_Print_Msg(0, " <DSMRlogger-Next>", 0); 
-      oled_Print_Msg(1, "OK, SPIFFS correct", 0);
-      oled_Print_Msg(2, "Verder met normale", 0);
-      oled_Print_Msg(3, "Verwerking ;-)", 2500);
-    }
+  if (!LittleFSNotPopulated) {
+    DebugTln(F("LittleFS correct populated -> normal operation!\r"));
+    drawScreen(oled_littlefs_populated);
 
-      
     DebugTln(F("Starting HTTP server now..."));
     httpServer.begin();
     DebugTln( "HTTP server gestart." );
@@ -471,58 +380,44 @@ void setup()
     if (hasAlternativeIndex)
     {
       DebugTln(F("has Alternative Index"));
-      httpServer.serveStatic("/",                 SPIFFS, settingIndexPage);
-      httpServer.serveStatic("/index",            SPIFFS, settingIndexPage);
-      httpServer.serveStatic("/index.html",       SPIFFS, settingIndexPage);
-      httpServer.serveStatic("/DSMRindex.html",   SPIFFS, settingIndexPage);
+      httpServer.serveStatic("/",                 LittleFS, settingIndexPage);
+      httpServer.serveStatic("/index",            LittleFS, settingIndexPage);
+      httpServer.serveStatic("/index.html",       LittleFS, settingIndexPage);
+      httpServer.serveStatic("/DSMRindex.html",   LittleFS, settingIndexPage);
     }
     else
     {
       DebugTln(F("has Alternative Index"));
-      httpServer.serveStatic("/",                 SPIFFS, "/DSMRindex.html");
+      httpServer.serveStatic("/",                 LittleFS, "/DSMRindex.html");
       DebugTln(F("added serverStatic [/]"));
-      httpServer.serveStatic("/DSMRindex.html",   SPIFFS, "/DSMRindex.html");
+      httpServer.serveStatic("/DSMRindex.html",   LittleFS, "/DSMRindex.html");
       DebugTln(F("added serverStatic [/DSMRindex.html]"));
-      httpServer.serveStatic("/index",            SPIFFS, "/DSMRindex.html");
+      httpServer.serveStatic("/index",            LittleFS, "/DSMRindex.html");
       DebugTln(F("added serverStatic [/index]"));
-      httpServer.serveStatic("/index.html",       SPIFFS, "/DSMRindex.html");
+      httpServer.serveStatic("/index.html",       LittleFS, "/DSMRindex.html");
       DebugTln(F("added serverStatic [/index.html]"));
-      httpServer.serveStatic("/DSMRindex.css",    SPIFFS, "/DSMRindex.css");
+      httpServer.serveStatic("/DSMRindex.css",    LittleFS, "/DSMRindex.css");
       DebugTln(F("added serverStatic [/DSMRindex.css]"));
-      httpServer.serveStatic("/DSMRindex.js",     SPIFFS, "/DSMRindex.js");
+      httpServer.serveStatic("/DSMRindex.js",     LittleFS, "/DSMRindex.js");
       DebugTln(F("added serverStatic [/DSMRindex.js]"));
-      httpServer.serveStatic("/DSMRgraphics.js",  SPIFFS, "/DSMRgraphics.js");
+      httpServer.serveStatic("/DSMRgraphics.js",  LittleFS, "/DSMRgraphics.js");
       DebugTln(F("serverStatic [/DSMRgraphics.js]"));
     }
   } else {
-    DebugTln(F("Oeps! not all files found on SPIFFS -> present FSexplorer!\r"));
-    spiffsNotPopulated = true;
-    if (settingOledType > 0)
-    {
-      oled_Print_Msg(0, "!OEPS! niet alle", 0);
-      oled_Print_Msg(1, "files op SPIFFS", 0);
-      oled_Print_Msg(2, "gevonden! (fout!)", 0);
-      oled_Print_Msg(3, "Start FSexplorer", 2000);
-    }
+    DebugTln(F("Oeps! not all files found on LittleFS -> present FSexplorer!\r"));
+    LittleFSNotPopulated = true;
+    drawScreen(oled_littlefs_not_populated);
   }
   
   DebugTln(F("setupFSexplorer"));
   setupFSexplorer();
-  httpServer.serveStatic("/FSexplorer.png",   SPIFFS, "/FSexplorer.png");
+  httpServer.serveStatic("/FSexplorer.png",   LittleFS, "/FSexplorer.png");
 
   DebugTln(F("setup RESTAPI interface"));
   httpServer.on("/api", HTTP_GET, processAPI);
   // all other api calls are catched in FSexplorer onNotFounD!
 
-
-  if (settingOledType > 0)                                  //HAS_OLED
-  {                                                         //HAS_OLED
-    oled_Clear();                                           //HAS_OLED
-    oled_Print_Msg(0, " <DSMRlogger-Next>", 0);                //HAS_OLED
-    oled_Print_Msg(2, "HTTP server ..", 0);                 //HAS_OLED
-    oled_Print_Msg(3, "gestart (poort 80)", 0);             //HAS_OLED
-  }                                                         //HAS_OLED
-
+  drawScreen(oled_http_server_started);
   for (int i = 0; i< 10; i++) 
   {
     digitalWrite(LED_BUILTIN, !digitalRead(LED_BUILTIN));
@@ -555,17 +450,9 @@ void setup()
 
 //================ Start Slimme Meter ===============================
 
-  if (settingOledType > 0)
-  {
-    oled_Print_Msg(0, "<DSMRlogger-Next>", 0);
-    oled_Print_Msg(1, "Startup complete", 0);
-    oled_Print_Msg(2, "Wait for first", 0);
-    oled_Print_Msg(3, "telegram .....", 500);
-  }
-
+  drawScreen(oled_wait_for_telegram);
   DebugTln(F("Start slimmeMeter..."));
   initSlimmermeter();
-  slimmeMeter.enable(true);
 
 //================ The final part of the Setup =====================
 
@@ -582,7 +469,11 @@ void setup()
   {
     DebugTln("Wintertime");
   }
+
+ 
 //================ End of Slimmer Meter ============================
+
+//postTelegram_API_test();
 } // setup()
 
 
@@ -697,14 +588,40 @@ void doSystemTasks()
   {
     checkFlashButton();
   }
+    
+  #ifdef USE_NTP_TIME 
+    loopNTP();
+  #endif
 
   yield();
 
 } // doSystemTasks()
 
+//===[ TELEGRAM RUNNING SERVICE ]=============================================================
+void telegrambot_Service()
+{
+ if (millis() - bot_lasttime > BOT_MTBS)
+  {
+    int numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+
+    while (numNewMessages)
+    {
+      Monitor.println("got response");
+      handleNewMessages(numNewMessages);
+      numNewMessages = bot.getUpdates(bot.last_message_received + 1);
+    }
+
+    bot_lasttime = millis();
+  }
+
+} // telegrambot_Service()
+
   
 void loop () 
 {  
+  //--- running telegram bot service
+  telegrambot_Service();
+  
   //--- do the tasks that has to be done 
   //--- as often as possible
   doSystemTasks();
@@ -743,18 +660,18 @@ void loop ()
   if DUE(reconnectWiFi) 
     doReconnectWifi();
 
-//--- if NTP set, see if it needs synchronizing
-#if defined(USE_NTP_TIME)                                           //USE_NTP
-  if DUE(synchrNTP)                                                 //USE_NTP
-  {
-  //if (timeStatus() == timeNeedsSync || prevNtpHour != hour())     //USE_NTP
-  //{
-      //prevNtpHour = hour();                                         //USE_NTP
-      setSyncProvider(getNtpTime);                                  //USE_NTP
-      setSyncInterval(600);                                         //USE_NTP
-  //}
-  }
-#endif                                                              //USE_NTP
+// //--- if NTP set, see if it needs synchronizing
+// #if defined(USE_NTP_TIME)                                           //USE_NTP
+//   if DUE(synchrNTP)                                                 //USE_NTP
+//   {
+//   //if (timeStatus() == timeNeedsSync || prevNtpHour != hour())     //USE_NTP
+//   //{
+//       //prevNtpHour = hour();                                         //USE_NTP
+//       setSyncProvider(getNtpTime);                                  //USE_NTP
+//       setSyncInterval(600);                                         //USE_NTP
+//   //}
+//   }
+// #endif                                                              //USE_NTP
   
   yield();
   

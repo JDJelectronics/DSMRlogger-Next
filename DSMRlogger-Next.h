@@ -23,15 +23,17 @@
     #define DTR_ENABLE  12
   #endif
   #define SM_SERIAL Serial
+  #include <LittleFS.h>
+
 #elif defined(ESP32)
   #define ESP_RESET()             ESP.restart()
   #define ESP_GET_FREE_BLOCK()    ESP.getMaxAllocHeap()
   #define ESP_GET_CHIPID()        ((uint32_t)ESP.getEfuseMac()) //The chipID is essentially its MAC address (length: 6 bytes) 
   const char *flashMode[]         { "QIO", "QOUT", "DIO", "DOUT", "FAST READ", "SLOWREAD", "Unknown" };
-
-  #include "SPIFFS.h"
+  
   #include <rom/rtc.h>          // SDK ESP32 for reset reason function (see helper function)
   // ESP32 JDJ REV2 
+  // LED PIN  2               ///GPIO -- regular status led
   // LED PIN  24              //GPIO  --  data pin for WS2812B pixel
   // RX  PIN  16              //GPIO  -- UART2 RX -- connected to DSMR
   // TX  PIN  17              //GPIO  -- UART2 TX -- n.c.
@@ -46,14 +48,36 @@
   // LED PIN  24              //GPIO  --  data pin for WS2812B pixel
   // RX  PIN  16              //GPIO  -- UART2 RX -- connected to DSMR
   // TX  PIN  17              //GPIO  -- UART2 TX -- n.c.
-  #define RXD2 16           //GPIO16 for rev 2   
-  #define TXD2 17           //GPIO17 for rev 2   
+  // ESP32 JDJ REV4 
+  #define RXD2 16             //GPIO16 for rev 4  
+  #define TXD2 17             //GPIO17 for rev 4  
   #define SM_SERIAL Serial2
-  #ifdef USE_REQUEST_PIN
-    #define DTR_ENABLE  27
+
+  #ifdef USE_P1_RB_REV4
+    #define LED_BUILTIN 23    //GPIO23 for rev 4-- GPIO  --  status led
+    #define LED_RGBPIXEL 2    //GPIO2 for rev 4 -- GPIO  --  data pin for WS2812B pixel
+  #else
+    #ifdef USE_REQUEST_PIN
+      #define DTR_ENABLE  27    //GPIO27 for rev 4 -- not connected anymore!
+    #endif
   #endif
+
+  #include <LittleFS.h>  // with ESP32 2.0.4 
 #endif
 
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2
+#endif
+
+
+#include <AceTime.h>
+//Use acetime
+using namespace ace_time;
+static BasicZoneProcessor timeProcessor;
+static const int CACHE_SIZE = 3;
+// static BasicZoneManager<CACHE_SIZE> manager(zonedb::kZoneRegistrySize, zonedb::kZoneRegistry);
+static BasicZoneProcessorCache<CACHE_SIZE> zoneProcessorCache;
+static BasicZoneManager timezoneManager(zonedb::kZoneRegistrySize, zonedb::kZoneRegistry, zoneProcessorCache);
 
 
 #include <TimeLib.h>            // https://github.com/PaulStoffregen/Time
@@ -72,16 +96,8 @@
   #define writeToSysLog(...)  // nothing
 #endif
 
-#if defined( USE_PRE40_PROTOCOL )                               //PRE40
-  //  https://github.com/mrWheel/arduino-dsmr30.git             //PRE40
-  #include <dsmr30.h>                                           //PRE40
-#elif defined( USE_BELGIUM_PROTOCOL )                           //Belgium
-  //  https://github.com/mrWheel/arduino-dsmr-be.git            //Belgium
-  #include <dsmr-be.h>                                          //Belgium
-#else                                                           //else
-  //  https://github.com/matthijskooijman/arduino-dsmr
-  #include <dsmr.h>               // Version 0.1 - Commit f79c906 on 18 Sep 2018
-#endif
+//  https://github.com/matthijskooijman/arduino-dsmr
+#include <dsmr.h>               // Version Jan 2022 !!!
 
 #define _DEFAULT_HOSTNAME  "DSMR-API"  
 
@@ -93,6 +109,9 @@
 #define MAXCOLORNAME       15
 #define JSON_BUFF_MAX     255
 #define MQTT_BUFF_MAX     200
+
+#define CSTR(x) x.c_str()
+
 
 //-------------------------.........1....1....2....2....3....3....4....4....5....5....6....6....7....7
 //-------------------------1...5....0....5....0....5....0....5....0....5....0....5....0....5....0....5
@@ -117,8 +136,6 @@ uint32_t esp_get_free_block();
 
 #include "Debug.h"
 #include "espHelper.h"
-#include "oledStuff.h"
-#include "networkStuff.h"
 
 /**
  * Define the DSMRdata we're interested in, as well as the DSMRdatastructure to
@@ -168,9 +185,6 @@ using MyData = ParsedData<
   /* String */        ,gas_equipment_id
   /* uint8_t */       ,gas_valve_position
   /* TimestampedFixedValue */ ,gas_delivered
-#ifdef USE_PRE40_PROTOCOL                          //PRE40
-  /* TimestampedFixedValue */ ,gas_delivered2      //PRE40
-#endif                                             //PRE40
   /* uint16_t */      ,thermal_device_type
   /* String */        ,thermal_equipment_id
   /* uint8_t */       ,thermal_valve_position
@@ -263,7 +277,7 @@ void delayms(unsigned long);
 
 
 String    lastReset           = "";
-bool      spiffsNotPopulated  = false;
+bool      LittleFSNotPopulated  = false;
 bool      hasAlternativeIndex = false;
 bool      mqttIsConnected     = false;
 bool      Verbose1 = false, Verbose2 = false;
@@ -290,6 +304,62 @@ bool      isDST = false;
 // IPAddress Modbus_SolarEdge_IP(192, 168, 88, 22);    // Address of Modbus Slave device
 // const int Modbus_SolarEdge_port = 1502;             // Portnumber
 // ModbusIP  Modbus_SolarEdge;                         //ModbusIP object
+
+//final includes
+#include "oledStuff.h"
+#include "networkStuff.h"
+
+#define Monitor Serial
+#include <UniversalTelegramBot.h>
+
+// Telegram BOT Token (Get from Botfather)
+#define BOT_TOKEN "5039927641:AAFlBHpbAq1aZr710swxCyb014-uwSlOxH0"
+const unsigned long BOT_MTBS = 1000; // mean time between scan messages
+
+unsigned long bot_lasttime; // last time messages' scan has been done
+WiFiClientSecure secured_client;
+UniversalTelegramBot bot(BOT_TOKEN, secured_client);
+
+
+/*API-setup:
+ * t.me/MD_controllerBot : https://api.telegram.org/5137983591:AAHfF8T9NHgAUpnYzx5kNBn8Ck-7ggSUvUk
+ * 
+ * 
+ * groupID: -771371129 DSRMlogger-next test group
+
+
+
+Public SSL TLS 1.3 KEY
+Valid from 9/1/2009 to 1/1/2038
+Issued by: Go Daddy Root Certificate Authority -G2
+
+-----BEGIN CERTIFICATE-----
+MIIDxTCCAq2gAwIBAgIBADANBgkqhkiG9w0BAQsFADCBgzELMAkGA1UEBhMCVVMx
+EDAOBgNVBAgTB0FyaXpvbmExEzARBgNVBAcTClNjb3R0c2RhbGUxGjAYBgNVBAoT
+EUdvRGFkZHkuY29tLCBJbmMuMTEwLwYDVQQDEyhHbyBEYWRkeSBSb290IENlcnRp
+ZmljYXRlIEF1dGhvcml0eSAtIEcyMB4XDTA5MDkwMTAwMDAwMFoXDTM3MTIzMTIz
+NTk1OVowgYMxCzAJBgNVBAYTAlVTMRAwDgYDVQQIEwdBcml6b25hMRMwEQYDVQQH
+EwpTY290dHNkYWxlMRowGAYDVQQKExFHb0RhZGR5LmNvbSwgSW5jLjExMC8GA1UE
+AxMoR28gRGFkZHkgUm9vdCBDZXJ0aWZpY2F0ZSBBdXRob3JpdHkgLSBHMjCCASIw
+DQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAL9xYgjx+lk09xvJGKP3gElY6SKD
+E6bFIEMBO4Tx5oVJnyfq9oQbTqC023CYxzIBsQU+B07u9PpPL1kwIuerGVZr4oAH
+/PMWdYA5UXvl+TW2dE6pjYIT5LY/qQOD+qK+ihVqf94Lw7YZFAXK6sOoBJQ7Rnwy
+DfMAZiLIjWltNowRGLfTshxgtDj6AozO091GB94KPutdfMh8+7ArU6SSYmlRJQVh
+GkSBjCypQ5Yj36w6gZoOKcUcqeldHraenjAKOc7xiID7S13MMuyFYkMlNAJWJwGR
+tDtwKj9useiciAF9n9T521NtYJ2/LOdYq7hfRvzOxBsDPAnrSTFcaUaz4EcCAwEA
+AaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMCAQYwHQYDVR0OBBYE
+FDqahQcQZyi27/a9BUFuIMGU2g/eMA0GCSqGSIb3DQEBCwUAA4IBAQCZ21151fmX
+WWcDYfF+OwYxdS2hII5PZYe096acvNjpL9DbWu7PdIxztDhC2gV7+AJ1uP2lsdeu
+9tfeE8tTEH6KRtGX+rcuKxGrkLAngPnon1rpN5+r5N9ss4UXnT3ZJE95kTXWXwTr
+gIOrmgIttRD02JDHBHNA7XIloKmf7J6raBKZV8aPEjoJpL1E/QYVN8Gb5DKj7Tjo
+2GTzLH4U/ALqn83/B2gX2yKQOC16jdFU8WnjXzPKej17CuPKf1855eJ1usV2GDPO
+LPAvTK33sefOT6jEm0pUBsV/fdUID+Ic/n4XuKxe9tQWskMJDE32p2u0mYRlynqI
+4uJEvlz36hz1
+-----END CERTIFICATE-----
+
+*/
+
+
 
 //===========================================================================================
 // setup timers 

@@ -18,7 +18,6 @@
   #include <ESP8266mDNS.h>        // part of ESP8266 Core https://github.com/esp8266/Arduino
   #include <WiFiUdp.h>            // part of ESP8266 Core https://github.com/esp8266/Arduino
   #include <WiFiManager.h>        // version 0.14.0 - https://github.com/tzapu/WiFiManager
-
   #ifdef USE_UPDATE_SERVER
     //#include "ESP8266HTTPUpdateServer.h"  //Original version of ESP8266HTTPUpdateServer.h from ESP8266 Core
     #include "ModUpdateServer.h"            // https://github.com/mrWheel/ModUpdateServer
@@ -27,7 +26,8 @@
 
   //  included in main program: #include <TelnetStream.h>       // Version 0.0.1 - https://github.com/jandrassy/TelnetStream
   //  #include <Hash.h>
-  #include <FS.h>                                               // part of ESP8266 Core https://github.com/esp8266/Arduino
+  // #include <FS.h>                                               // part of ESP8266 Core https://github.com/esp8266/Arduino
+  #include <LittleFS.h>
 
 
   ESP8266WebServer        httpServer (80);
@@ -43,7 +43,7 @@
   #include <WiFiUdp.h>            // part of ESP32 Core
   #include <WiFiManager.h>
 
-  #include <SPIFFS.h>
+  #include <LittleFS.h>
 
   #ifdef USE_UPDATE_SERVER
     #include "ESP32ModUpdateServer.h"  // <<modified version of ESP32ModUpdateServer.h by Robert>>
@@ -60,10 +60,10 @@
 
 
 #if defined(ESP8266)
-  static      FSInfo SPIFFSinfo;
+  static      FSInfo fs_info;
 #elif defined(ESP32)
 #endif
-bool        SPIFFSmounted = false; 
+bool        LittleFSmounted = false; 
 bool        isConnected = false;
 
 //gets called when WiFiManager enters configuration mode
@@ -74,15 +74,7 @@ void configModeCallback (WiFiManager *myWiFiManager)
   DebugTln(WiFi.softAPIP().toString());
   //if you used auto generated SSID, print it
   DebugTln(myWiFiManager->getConfigPortalSSID());
-  if (settingOledType > 0)
-  {
-    oled_Clear();
-    oled_Print_Msg(0, "<DSMRlogger-Next>", 0);
-    oled_Print_Msg(1, "AP mode active", 0);
-    oled_Print_Msg(2, "Connect to:", 0);
-    oled_Print_Msg(3, myWiFiManager->getConfigPortalSSID().c_str(), 0);
-  }
-
+  drawScreen(oled_APmode, myWiFiManager->getConfigPortalSSID().c_str());
 } // configModeCallback()
 
 
@@ -92,7 +84,8 @@ void startWiFi(const char* hostname, int timeOut)
   WiFiManager manageWiFi;
   uint32_t lTime = millis();
   String thisAP = String(hostname) + "-" + WiFi.macAddress();
-
+  drawAPmode(thisAP.c_str());
+  
   DebugT("start ...");
   
   manageWiFi.setDebugOutput(true);
@@ -112,20 +105,13 @@ void startWiFi(const char* hostname, int timeOut)
   if (!manageWiFi.autoConnect(thisAP.c_str())) 
   {
     DebugTln(F("failed to connect and hit timeout"));
-    if (settingOledType > 0)
-    {
-      oled_Clear();
-      oled_Print_Msg(0, "<DSMRlogger-Next>", 0);
-      oled_Print_Msg(1, "Failed to connect", 0);
-      oled_Print_Msg(2, "and hit TimeOut", 0);
-      oled_Print_Msg(3, "**** NO WIFI ****", 0);
-    }
+    drawScreen(oled_no_wifi);
 
     //reset and try again, or maybe put it to deep sleep
-    //delay(3000);
+    delay(3000);
     esp_reboot();
-    //delay(2000);
-    DebugTf(" took [%d] seconds ==> ERROR!\r\n", (millis() - lTime) / 1000);
+    delay(2000);
+    DebugTf(" took [%d] seconds ==> ERROR!\r\n", (int)((millis() - lTime) / 1000));
     return;
   }
   
@@ -140,7 +126,7 @@ void startWiFi(const char* hostname, int timeOut)
   httpUpdater.setIndexPage(UpdateServerIndex);
   httpUpdater.setSuccessPage(UpdateServerSuccess);
 #endif
-  DebugTf(" took [%d] seconds => OK!\r\n", (millis() - lTime) / 1000);
+  DebugTf(" took [%d] seconds => OK!\r\n", int((millis() - lTime) / 1000));
   
 } // startWiFi()
 
